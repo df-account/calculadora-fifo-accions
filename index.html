@@ -963,19 +963,18 @@ function exportPDF(){
   doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(26,26,26);
   doc.text(T.pdfDetall, 14, y);
 
-  // Construir estructura: { any -> [ {sellNum, sellYear, sellPrice, totalQty, totalRevenue, totalGL, lots:[]} ] }
+  // Recollir vendes amb lots
   const sellsByYear={};
   let sellNum=0;
   for(const op of computed){
     if(op.type!=='sell') continue;
     sellNum++;
-    const yr=op.year;
+    const yr=String(op.year);
     if(!sellsByYear[yr]) sellsByYear[yr]=[];
     sellsByYear[yr].push({
-      sellNum, sellYear:op.year, sellPrice:op.price,
-      totalQty:op.qty, totalRevenue:op.qty*op.price,
-      totalGL:op.result, costBasis:op.costBasis,
-      lots:op.lots||[]
+      sellNum, sellPrice:op.price, totalQty:op.qty,
+      totalRevenue:op.qty*op.price, totalGL:op.result,
+      costBasis:op.costBasis, lots:op.lots||[]
     });
   }
 
@@ -989,62 +988,43 @@ function exportPDF(){
 
     for(const yr of sortedYears){
       const sells=sellsByYear[yr];
-      let yearTotalQty=0, yearTotalRevenue=0, yearTotalCost=0, yearTotalGL=0;
+      let yrQty=0, yrRevenue=0, yrCost=0, yrGL=0;
 
-      // ── Capçalera d'any ──
-      tableBody.push([{
-        content: `── ${yr} ──`,
-        colSpan:7,
-        styles:{fontStyle:'bold', fillColor:[26,26,26], textColor:[255,255,255], fontSize:9, halign:'left'}
-      }]);
-
+      // Una fila per cada venda individual amb els seus lots
       for(const sale of sells){
-        yearTotalQty     += sale.totalQty;
-        yearTotalRevenue += sale.totalRevenue;
-        yearTotalCost    += sale.costBasis;
-        yearTotalGL      += sale.totalGL;
+        yrQty     += sale.totalQty;
+        yrRevenue += sale.totalRevenue;
+        yrCost    += sale.costBasis;
+        yrGL      += sale.totalGL;
 
         // Capçalera de venda
         tableBody.push([{
-          content: T.pdfVendaHead(sale.sellNum, sale.sellYear, fmtP(sale.sellPrice), fmtN(sale.totalQty)),
+          content: T.pdfVendaHead(sale.sellNum, yr, fmtP(sale.sellPrice), fmtN(sale.totalQty)),
           colSpan:7,
           styles:{fontStyle:'bold', fillColor:[235,242,252], textColor:[20,68,124], fontSize:8}
         }]);
 
-        // Lots de la venda
+        // Lots
         for(const lot of sale.lots){
-          const lotRevenue = lot.qty*sale.sellPrice;
-          const lotCost    = lot.qty*lot.buyPrice;
-          const lotGL      = lotRevenue-lotCost;
+          const lotRevenue=lot.qty*sale.sellPrice;
+          const lotCost=lot.qty*lot.buyPrice;
+          const lotGL=lotRevenue-lotCost;
           tableBody.push([
-            fmtN(lot.qty),
-            fmtP(lot.buyPrice),
-            String(lot.buyYear),
-            fmtP(sale.sellPrice),
-            fmtP(lotCost),
-            fmtP(lotRevenue),
+            fmtN(lot.qty), fmtP(lot.buyPrice), String(lot.buyYear),
+            fmtP(sale.sellPrice), fmtP(lotCost), fmtP(lotRevenue),
             (lotGL>=0?'+':'')+fmtP(lotGL)
           ]);
         }
-
-        // Subtotal venda
-        tableBody.push([
-          {content: T.pdfTotalVenda(sale.sellNum), colSpan:4,
-           styles:{fontStyle:'bold', fillColor:[245,245,242], fontSize:8}},
-          fmtP(sale.costBasis),
-          fmtP(sale.totalRevenue),
-          (sale.totalGL>=0?'+':'')+fmtP(sale.totalGL)
-        ]);
       }
 
-      // ── Total any ──
-      const yearPct = yearTotalRevenue>0?(yearTotalGL/yearTotalRevenue*100):0;
+      // ── Total any: sumatori de totes les vendes de l'any ──
+      const yrPct=yrRevenue>0?(yrGL/yrRevenue*100):0;
       tableBody.push([
-        {content: `TOTAL ${yr}`, colSpan:4,
-         styles:{fontStyle:'bold', fillColor:[20,68,124], textColor:[255,255,255], fontSize:9}},
-        fmtP(yearTotalCost),
-        fmtP(yearTotalRevenue),
-        (yearTotalGL>=0?'+':'')+fmtP(yearTotalGL)
+        { content:`TOTAL ${yr}  —  ${fmtN(yrQty)} acc.`, colSpan:4,
+          styles:{fontStyle:'bold', fillColor:[20,68,124], textColor:[255,255,255], fontSize:9} },
+        fmtP(yrCost),
+        fmtP(yrRevenue),
+        (yrGL>=0?'+':'')+fmtP(yrGL)
       ]);
     }
 
@@ -1060,18 +1040,20 @@ function exportPDF(){
         3:{halign:'right'}, 4:{halign:'right'}, 5:{halign:'right'}, 6:{halign:'right'}
       },
       didParseCell:function(d){
-        if(d.section==='body'&&d.column.index===6&&d.row.raw&&d.row.raw.length===7){
+        if(d.section!=='body') return;
+        // Files de lot (7 columnes): color G/L
+        if(d.row.raw.length===7 && d.column.index===6){
           const val=String(d.cell.raw||'');
           if(val&&val!=='—'){
             d.cell.styles.textColor=val.startsWith('+')?[15,110,86]:[153,60,29];
             d.cell.styles.fontStyle='bold';
           }
         }
-        // Color G/L a files de total (colSpan, index 6 és l'últim camp)
-        if(d.section==='body'&&d.row.raw&&d.row.raw.length===4&&d.column.index===3){
+        // Files de total any (4 cel·les amb colSpan): color G/L a l'última
+        if(d.row.raw.length===4 && d.column.index===3){
           const val=String(d.cell.raw||'');
           if(val&&val!=='—'){
-            d.cell.styles.textColor=val.startsWith('+')?[15,110,86]:[153,60,29];
+            d.cell.styles.textColor=val.startsWith('+')?[15,255,180]:[255,180,180];
             d.cell.styles.fontStyle='bold';
           }
         }
