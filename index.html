@@ -907,19 +907,21 @@ function exportPDF(){
   const H=doc.internal.pageSize.getHeight();
   const dateStr=new Date().toLocaleDateString();
 
+  // ── Capçalera ──
   doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(26,26,26);
   doc.text(T.pdfTitle, 14, 18);
   doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(120,120,120);
   doc.text(T.pdfSub(dateStr), 14, 24);
   doc.setDrawColor(200,200,195); doc.line(14,27,W-14,27);
 
+  // ── Resum per any ──
   let y=34;
   doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(26,26,26);
   doc.text(T.pdfResumAny, 14, y);
   const years=Object.keys(byYear).sort();
   doc.autoTable({
     startY:y+4,
-    head:[ ['Any', T.pdfAccVenudes, T.pdfIngressos, T.pdfGLCol, T.pdfRend] ],
+    head:[['Any', T.pdfAccVenudes, T.pdfIngressos, T.pdfGLCol, T.pdfRend]],
     body:years.map(yr=>{
       const r=byYear[yr], pct=r.revenue>0?(r.realized/r.revenue*100):0;
       return[yr, fmtN(r.sold), fmtP(r.revenue),
@@ -940,6 +942,7 @@ function exportPDF(){
     margin:{left:14,right:14}
   });
 
+  // ── Posició en cartera ──
   y=doc.lastAutoTable.finalY+10;
   if(totalShares>0.0001){
     doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(26,26,26);
@@ -956,58 +959,93 @@ function exportPDF(){
     y=doc.lastAutoTable.finalY+10;
   }
 
+  // ── Detall de vendes agrupat per any ──
   doc.setFont('helvetica','bold'); doc.setFontSize(10); doc.setTextColor(26,26,26);
   doc.text(T.pdfDetall, 14, y);
 
-  const sellRows=[];
+  // Construir estructura: { any -> [ {sellNum, sellYear, sellPrice, totalQty, totalRevenue, totalGL, lots:[]} ] }
+  const sellsByYear={};
   let sellNum=0;
   for(const op of computed){
     if(op.type!=='sell') continue;
     sellNum++;
-    const revenue=op.qty*op.price;
-    if(op.lots&&op.lots.length>0){
-      op.lots.forEach((lot,i)=>{
-        sellRows.push({
-          isFirst:i===0, sellNum, sellYear:op.year, sellPrice:op.price,
-          totalQty:op.qty, totalRevenue:revenue, totalGL:op.result,
-          lot, lotRevenue:lot.qty*op.price, lotCost:lot.qty*lot.buyPrice,
-          lotGL:lot.qty*op.price - lot.qty*lot.buyPrice
-        });
-      });
-    }
+    const yr=op.year;
+    if(!sellsByYear[yr]) sellsByYear[yr]=[];
+    sellsByYear[yr].push({
+      sellNum, sellYear:op.year, sellPrice:op.price,
+      totalQty:op.qty, totalRevenue:op.qty*op.price,
+      totalGL:op.result, costBasis:op.costBasis,
+      lots:op.lots||[]
+    });
   }
 
-  if(sellRows.length===0){
+  const sortedYears=Object.keys(sellsByYear).sort();
+
+  if(sortedYears.length===0){
     doc.setFont('helvetica','normal'); doc.setFontSize(9); doc.setTextColor(120,120,120);
     doc.text(T.pdfSensVendes, 14, y+8);
   } else {
     const tableBody=[];
-    let i=0;
-    while(i<sellRows.length){
-      const row=sellRows[i];
+
+    for(const yr of sortedYears){
+      const sells=sellsByYear[yr];
+      let yearTotalQty=0, yearTotalRevenue=0, yearTotalCost=0, yearTotalGL=0;
+
+      // ── Capçalera d'any ──
       tableBody.push([{
-        content:T.pdfVendaHead(row.sellNum, row.sellYear, fmtP(row.sellPrice), fmtN(row.totalQty)),
+        content: `── ${yr} ──`,
         colSpan:7,
-        styles:{fontStyle:'bold',fillColor:[235,242,252],textColor:[20,68,124],fontSize:8}
+        styles:{fontStyle:'bold', fillColor:[26,26,26], textColor:[255,255,255], fontSize:9, halign:'left'}
       }]);
-      let j=i;
-      while(j<sellRows.length&&sellRows[j].sellNum===row.sellNum) j++;
-      for(let k=i;k<j;k++){
-        const r=sellRows[k];
+
+      for(const sale of sells){
+        yearTotalQty     += sale.totalQty;
+        yearTotalRevenue += sale.totalRevenue;
+        yearTotalCost    += sale.costBasis;
+        yearTotalGL      += sale.totalGL;
+
+        // Capçalera de venda
+        tableBody.push([{
+          content: T.pdfVendaHead(sale.sellNum, sale.sellYear, fmtP(sale.sellPrice), fmtN(sale.totalQty)),
+          colSpan:7,
+          styles:{fontStyle:'bold', fillColor:[235,242,252], textColor:[20,68,124], fontSize:8}
+        }]);
+
+        // Lots de la venda
+        for(const lot of sale.lots){
+          const lotRevenue = lot.qty*sale.sellPrice;
+          const lotCost    = lot.qty*lot.buyPrice;
+          const lotGL      = lotRevenue-lotCost;
+          tableBody.push([
+            fmtN(lot.qty),
+            fmtP(lot.buyPrice),
+            String(lot.buyYear),
+            fmtP(sale.sellPrice),
+            fmtP(lotCost),
+            fmtP(lotRevenue),
+            (lotGL>=0?'+':'')+fmtP(lotGL)
+          ]);
+        }
+
+        // Subtotal venda
         tableBody.push([
-          fmtN(r.lot.qty), fmtP(r.lot.buyPrice), String(r.lot.buyYear),
-          fmtP(r.sellPrice), fmtP(r.lotCost), fmtP(r.lotRevenue),
-          (r.lotGL>=0?'+':'')+fmtP(r.lotGL)
+          {content: T.pdfTotalVenda(sale.sellNum), colSpan:4,
+           styles:{fontStyle:'bold', fillColor:[245,245,242], fontSize:8}},
+          fmtP(sale.costBasis),
+          fmtP(sale.totalRevenue),
+          (sale.totalGL>=0?'+':'')+fmtP(sale.totalGL)
         ]);
       }
+
+      // ── Total any ──
+      const yearPct = yearTotalRevenue>0?(yearTotalGL/yearTotalRevenue*100):0;
       tableBody.push([
-        {content:T.pdfTotalVenda(row.sellNum),colSpan:4,
-         styles:{fontStyle:'bold',fillColor:[245,245,242],fontSize:8}},
-        fmtP(row.totalRevenue-row.totalGL),
-        fmtP(row.totalRevenue),
-        (row.totalGL>=0?'+':'')+fmtP(row.totalGL)
+        {content: `TOTAL ${yr}`, colSpan:4,
+         styles:{fontStyle:'bold', fillColor:[20,68,124], textColor:[255,255,255], fontSize:9}},
+        fmtP(yearTotalCost),
+        fmtP(yearTotalRevenue),
+        (yearTotalGL>=0?'+':'')+fmtP(yearTotalGL)
       ]);
-      i=j;
     }
 
     doc.autoTable({
@@ -1015,14 +1053,22 @@ function exportPDF(){
       head:[[T.pdfColAcc, T.pdfColPrCom, T.pdfColAnyCom, T.pdfColPrVen,
              T.pdfColCostLot, T.pdfColIngLot, T.pdfColGLLot]],
       body:tableBody,
-      styles:{fontSize:8,cellPadding:2.5},
+      styles:{fontSize:8, cellPadding:2.5},
       headStyles:{fillColor:[20,68,124],textColor:255,fontStyle:'bold'},
       columnStyles:{
-        0:{halign:'right'},1:{halign:'right'},2:{halign:'center'},
-        3:{halign:'right'},4:{halign:'right'},5:{halign:'right'},6:{halign:'right'}
+        0:{halign:'right'}, 1:{halign:'right'}, 2:{halign:'center'},
+        3:{halign:'right'}, 4:{halign:'right'}, 5:{halign:'right'}, 6:{halign:'right'}
       },
       didParseCell:function(d){
         if(d.section==='body'&&d.column.index===6&&d.row.raw&&d.row.raw.length===7){
+          const val=String(d.cell.raw||'');
+          if(val&&val!=='—'){
+            d.cell.styles.textColor=val.startsWith('+')?[15,110,86]:[153,60,29];
+            d.cell.styles.fontStyle='bold';
+          }
+        }
+        // Color G/L a files de total (colSpan, index 6 és l'últim camp)
+        if(d.section==='body'&&d.row.raw&&d.row.raw.length===4&&d.column.index===3){
           const val=String(d.cell.raw||'');
           if(val&&val!=='—'){
             d.cell.styles.textColor=val.startsWith('+')?[15,110,86]:[153,60,29];
@@ -1034,6 +1080,7 @@ function exportPDF(){
     });
   }
 
+  // ── Peu de pàgina ──
   const pageCount=doc.internal.getNumberOfPages();
   for(let p=1;p<=pageCount;p++){
     doc.setPage(p);
